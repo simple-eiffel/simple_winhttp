@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>simple_winhttp - Windows-Native HTTPS Client for Eiffel</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" type="image/png" href="images/logo.svg">
+</head>
+<body>
+    <header>
+        <div class="logo-container">
+            <img src="images/logo.svg" alt="simple_* logo" class="logo">
+        </div>
+        <h1>simple_winhttp</h1>
+        <p class="tagline">Windows-Native HTTPS Client for Eiffel</p>
+        <div class="badges">
+            <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License">
+            <img src="https://img.shields.io/badge/Eiffel-25.02-purple.svg" alt="Eiffel 25.02">
+            <img src="https://img.shields.io/badge/DBC-Contracts-green.svg" alt="Design by Contract">
+        </div>
+    </header>
+
+    <nav>
+        <ul>
+            <li><a href="#overview">Overview</a></li>
+            <li><a href="#quick-start">Quick Start</a></li>
+            <li><a href="#features">Features</a></li>
+            <li><a href="#api">API Reference</a></li>
+            <li><a href="https://github.com/simple-eiffel/simple_winhttp">GitHub</a></li>
+        </ul>
+    </nav>
+
+    <main>
+        <section id="overview">
+            <h2>Overview</h2>
+            <p>
+                <strong>simple_winhttp</strong> is an HTTP/HTTPS client on WinHTTP - the stack that is
+                part of every supported Windows. Nothing to redistribute (unlike libcurl, which ships
+                only inside an EiffelStudio installation), HTTPS through SChannel, the system
+                certificate store for free. One synchronous exchange per call; every network condition
+                comes back as a result object, never an exception.
+            </p>
+            <p>
+                Promoted from the field-proven WinHTTP glue in <code>simple_ocr_capture</code> and
+                extended with HTTPS, request headers, per-call timeouts and bounded bodies.
+                Part of the <strong>simple_*</strong> ecosystem of focused, single-purpose Eiffel libraries.
+            </p>
+        </section>
+
+        <section id="quick-start">
+            <h2>Quick Start</h2>
+            <h3>Installation</h3>
+            <pre><code>&lt;library name="simple_winhttp" location="$SIMPLE_EIFFEL/simple_winhttp/simple_winhttp.ecf"/&gt;</code></pre>
+            <p>No <code>external_library</code> entry needed: the C layer links winhttp.lib via <code>#pragma comment</code>.</p>
+
+            <h3>Basic Usage</h3>
+            <pre><code>local
+    client: SIMPLE_WINHTTP
+    headers: HASH_TABLE [STRING_8, STRING_8]
+    response: SIMPLE_WINHTTP_RESPONSE
+do
+    create client.make
+
+    -- One GET
+    response := client.get ("https://example.org/health")
+    if response.is_success then
+        print (response.body)
+    elseif response.is_exchanged then
+        print ("HTTP " + response.status.out)
+    else
+        print (response.error)   -- refused, timed out, TLS failure ...
+    end
+
+    -- One POST with headers and a per-call timeout
+    create headers.make (1)
+    headers.put ("application/json", "Content-Type")
+    response := client.send ("POST", url, headers, body_json, 40)
+end</code></pre>
+        </section>
+
+        <section id="features">
+            <h2>Features</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>Failures Are Results</h4>
+                    <p>Refused, timed out, TLS failure, oversized body: a response object with error text, never an exception</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Redirects Never Followed</h4>
+                    <p>WINHTTP_OPTION_REDIRECT_POLICY_NEVER on every session: a 3xx is the reply, Location surfaced, bearer headers never re-sent</p>
+                </div>
+                <div class="feature-card">
+                    <h4>HTTPS by SChannel</h4>
+                    <p>Certificate validation on by default; explicit opt-out for lab rigs with self-signed certificates</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Bounded Bodies</h4>
+                    <p>16 MiB default ceiling enforced in the read loop - a hostile reply is a clean failure, not a memory bomb</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Long-Poll Ready</h4>
+                    <p>Separate connect and receive timeouts; the per-call receive timeout comfortably outlives a 25-30 s hold</p>
+                </div>
+                <div class="feature-card">
+                    <h4>SCOOP Safe</h4>
+                    <p>No shared state anywhere: handles live inside one C call, status travels by out-parameters - one instance per processor</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="api">
+            <h2>API Reference</h2>
+            <h3>SIMPLE_WINHTTP</h3>
+            <table>
+                <tr><th>Feature</th><th>Description</th></tr>
+                <tr><td><code>get (url): SIMPLE_WINHTTP_RESPONSE</code></td><td>One GET, no extra headers, default receive timeout</td></tr>
+                <tr><td><code>post (url, body): SIMPLE_WINHTTP_RESPONSE</code></td><td>One POST of raw body bytes, no extra headers</td></tr>
+                <tr><td><code>send (method, url, headers, body, timeout_seconds)</code></td><td>The full exchange: method, header table, optional body bytes, per-call receive timeout</td></tr>
+                <tr><td><code>set_connect_timeout_seconds (s)</code></td><td>Resolve + connect allowance (default 10)</td></tr>
+                <tr><td><code>set_receive_timeout_seconds (s)</code></td><td>Receive allowance for get/post (default 40)</td></tr>
+                <tr><td><code>set_body_maximum (bytes)</code></td><td>Response body ceiling (default 16 MiB, at most 1 GiB)</td></tr>
+                <tr><td><code>set_certificate_validation (on)</code></td><td>HTTPS certificate validation (default True)</td></tr>
+                <tr><td><code>Redirects_are_never_followed</code></td><td>True - constant; there is deliberately no off switch</td></tr>
+                <tr><td><code>parse_url (url) / parsed_host / parsed_port / parsed_path / parsed_is_tls</code></td><td>The URL cracker, public and unit-tested</td></tr>
+                <tr><td><code>exchange_count</code></td><td>Exchanges attempted by this instance</td></tr>
+            </table>
+            <h3>SIMPLE_WINHTTP_RESPONSE</h3>
+            <table>
+                <tr><th>Feature</th><th>Description</th></tr>
+                <tr><td><code>status</code></td><td>HTTP status; 0 exactly when the transport failed</td></tr>
+                <tr><td><code>body</code></td><td>Raw body bytes (STRING_8)</td></tr>
+                <tr><td><code>raw_headers</code></td><td>Status line + CRLF header lines, verbatim</td></tr>
+                <tr><td><code>header (name)</code></td><td>Case-insensitive header lookup, trimmed; Void when absent</td></tr>
+                <tr><td><code>location</code></td><td>The Location of a 3xx - surfaced, never acted on</td></tr>
+                <tr><td><code>is_exchanged / is_success / is_redirect</code></td><td>status &gt; 0 / 2xx / 3xx</td></tr>
+                <tr><td><code>error</code></td><td>Transport failure reason; empty when exchanged</td></tr>
+            </table>
+        </section>
+    </main>
+
+    <footer>
+        <p>MIT License - Part of the <a href="https://github.com/simple-eiffel">Simple Eiffel</a> ecosystem</p>
+    </footer>
+</body>
+</html>

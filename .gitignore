@@ -1,0 +1,41 @@
+# Eiffel build artifacts
+EIFGENs/
+Documentation/
+
+# Compiled files
+*.melted
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Backup files
+*.swp
+*.bak
+*~
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Windows resource files (generated)
+*.rc
+
+# Log files
+*.log
+exception_trace.log
+
+# LSP cache
+.eiffel_lsp/
+-/
+
+# Local data
+EIFDATA/
+output/
+*.epr

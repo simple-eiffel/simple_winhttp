@@ -1,0 +1,9 @@
+{
+  "name": "simple_winhttp",
+  "version": "0.1.0",
+  "description": "Windows-native HTTPS client (WinHTTP): synchronous exchanges, no redirects, failures as results",
+  "author": "Larry Rix",
+  "license": "MIT",
+  "category": "networking",
+  "keywords": ["http", "https", "winhttp", "client", "windows", "tls"]
+}
