@@ -32,6 +32,13 @@ note
 		  (checked at this boundary); bodies are BYTES (STRING_8) in both
 		  directions - UTF-8 JSON travels as its bytes.
 
+		* A WAIT HERE IS NEVER THE WHOLE PROGRAM'S WAIT (0.1.1): the one
+		  external that waits on the network, `c_send', is marked
+		  `blocking', so ISE's garbage collector may run - and every
+		  other processor may keep allocating - while an exchange is in
+		  flight. Without that marker a 25 s long poll stops every other
+		  processor for 25 s at its next allocation.
+
 		SCOOP: one instance per processor. An instance keeps no handles
 		between calls (the whole Win32 handle lifecycle lives inside one
 		C call and closes on every path), and the C layer keeps no global
@@ -518,14 +525,37 @@ feature {NONE} -- Externals
 			a_out_status, a_out_winerr, a_out_overflow: TYPED_POINTER [INTEGER]): POINTER
 			-- One exchange in C; NULL when nothing was exchanged. See
 			-- swhttp_request in Clib/simple_winhttp.h.
+			--
+			-- MARKED `blocking' (0.1.1), and it must stay marked. This call
+			-- WAITS - on a DNS answer, on a TCP handshake, on a TLS
+			-- handshake, and above all on a peer that may hold the answer
+			-- back for as long as `a_receive_ms' allows. ISE's garbage
+			-- collector stops every thread of the system before it collects,
+			-- and a thread inside an UNMARKED external is where the runtime
+			-- can neither see it nor stop it: the collection waits for the
+			-- call to return, and every other processor waits with it, at
+			-- its very next allocation. Unmarked, one 25 s long poll here
+			-- froze simple_chat's window for 25 s (2026-09-02). The marker
+			-- tells the runtime this thread has left Eiffel, so a collection
+			-- may proceed without it.
+			--
+			-- Marking is SAFE here because nothing the C layer touches is
+			-- Eiffel-collected memory: every buffer crossing the boundary is
+			-- C_STRING / MANAGED_POINTER (C heap), and the out parameters
+			-- are addresses of this routine's own basic-typed locals.
 		external
-			"C inline use %"simple_winhttp.h%""
+			"C blocking inline use %"simple_winhttp.h%""
 		alias
 			"return swhttp_request ((const char *) $a_verb, (const char *) $a_host, (int) $a_port, (const char *) $a_path, (int) $a_tls, (const char *) $a_headers, (const char *) $a_body, (int) $a_body_len, (int) $a_connect_ms, (int) $a_receive_ms, (int) $a_max_body, (int) $a_validate, (int *) $a_out_len, (char **) $a_out_headers, (int *) $a_out_status, (int *) $a_out_winerr, (int *) $a_out_overflow);"
 		end
 
 	c_free (a_ptr: POINTER)
 			-- Release a buffer the C layer handed over.
+			--
+			-- Deliberately NOT `blocking': this is one `free ()' on a buffer
+			-- this process already owns. It cannot wait on a network, a
+			-- disk or a lock the runtime cares about, and marking a call
+			-- this short would cost two runtime transitions to save nothing.
 		external
 			"C inline use %"simple_winhttp.h%""
 		alias

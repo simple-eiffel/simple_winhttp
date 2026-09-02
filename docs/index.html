@@ -106,6 +106,10 @@ end</code></pre>
                     <h4>SCOOP Safe</h4>
                     <p>No shared state anywhere: handles live inside one C call, status travels by out-parameters - one instance per processor</p>
                 </div>
+                <div class="feature-card">
+                    <h4>Never Stalls the Collector</h4>
+                    <p>Every network-waiting external is marked <code>blocking</code> (0.1.1), so a long request never stops ISE's garbage collector - and never freezes another processor at its next allocation</p>
+                </div>
             </div>
         </section>
 
