@@ -25,6 +25,7 @@ Part of the [Simple Eiffel](https://github.com/simple-eiffel) ecosystem.
 - **Bodies are bounded** by `body_maximum` (default 16 MiB); beyond it the exchange fails cleanly.
 - **HTTPS certificate validation is ON by default**; `set_certificate_validation (False)` exists for lab rigs with self-signed certificates.
 - **UTF-8 discipline**: URLs and header names/values are ASCII (checked at the boundary); bodies are bytes (`STRING_8`) in both directions.
+- **A request in flight never stalls the rest of the program.** Every external here that waits on the network is marked `blocking`, so ISE's garbage collector may run - and every other processor may keep allocating - while an exchange is open. An unmarked waiting external would stop every thread of the system for the whole request: see CHANGELOG 0.1.1.
 
 ## Installation
 
@@ -86,6 +87,8 @@ end
 
 One instance per processor. An instance keeps no Win32 handles between calls (the whole handle lifecycle lives inside one C call and closes on every path), and the C layer keeps no global state - status, error and overflow travel through out parameters - so instances on different processors never interfere.
 
+**And an exchange never freezes the others.** `c_send` is declared `external "C blocking inline ..."`. ISE's collector stops every thread of the system before it collects, and a thread inside an *unmarked* external cannot be seen or stopped, so the collection waits for it - and every other processor waits with it, at its very next allocation. Marked, the runtime knows the thread has left Eiffel and collects without it. That is why a 25 s long poll through this library costs the GUI processor nothing; unmarked, it cost it 25 s (simple_chat, 2026-09-02). `c_free` is left unmarked on purpose: one `free ()` cannot wait on anything.
+
 ## Tests
 
 ```
@@ -94,6 +97,15 @@ One instance per processor. An instance keeps no Win32 handles between calls (th
 ```
 
 No internet is ever touched. The unit tests cover the pure parts plus connection-refused-as-a-result against a dead local port. The live tests speak to two optional localhost helpers (a simple_chat server on 8130, a 302-answering helper on 8132) and print SKIP when a helper is not up, so the suite stays green on a bare machine.
+
+### The freeze assault (SCOOP)
+
+```
+/d/prod/ec.sh test -config simple_winhttp.ecf -target simple_winhttp_scoop_tests
+./EIFGENs/simple_winhttp_scoop_tests/F_code/simple_winhttp.exe
+```
+
+Four tests on two processors, no internet and no helper. A raw loopback listener holds each answer back three seconds while a second processor drives the real `SIMPLE_WINHTTP` and the root does nothing but allocate; the root's worst single allocation must stay under 500 ms. Unmarked it was 15,801 ms; marked it is single-digit. Three companion probes hold the law itself - the same wait as an Eiffel sleep, as an unmarked C call, and as the same C call marked `blocking`.
 
 ## License
 
