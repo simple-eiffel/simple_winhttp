@@ -287,12 +287,14 @@ feature {NONE} -- The root's own allocator
 			positive: a_bursts > 0 and a_gap_ms > 0
 		local
 			l_env: EXECUTION_ENVIRONMENT
+			l_memory: MEMORY
 			l_live: ARRAYED_LIST [STRING_8]
 			l_junk: ARRAYED_LIST [STRING_8]
 			i, k: INTEGER
 			t0, l_span: INTEGER_64
 		do
 			create l_env
+			create l_memory
 			create l_live.make (a_bursts * Burst_kept)
 			from
 				i := 1
@@ -317,6 +319,14 @@ feature {NONE} -- The root's own allocator
 				variant
 					Burst_strings + 1 - k
 				end
+					-- Force one collection inside every burst, as simple_process
+					-- does. Whether the allocator alone triggers one in a window
+					-- depends on heap history, so without this the unmarked control
+					-- can see no collection, and the marked tests can pass without
+					-- proving anything. A collection must stop every thread, so it
+					-- waits for a thread in an unmarked external, and never for one
+					-- in a marked external.
+				l_memory.full_collect
 				l_span := now_ms - t0
 				if l_span > Result then
 					Result := l_span
