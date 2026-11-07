@@ -1,8 +1,8 @@
 note
 	description: "[
-		Windows-native HTTPS client: one synchronous exchange per call,
-		riding WinHTTP (in every supported Windows - nothing to
-		redistribute, unlike libcurl). Promoted from simple_ocr_capture's
+		HTTPS client: one synchronous exchange per call, riding WinHTTP on
+		Windows (in every supported Windows - nothing to redistribute) and
+		libcurl on macOS and Linux, under the same contract. Promoted from simple_ocr_capture's
 		proven OCR_HTTP and extended with HTTPS, request headers, a
 		per-call receive timeout and a bounded response body.
 

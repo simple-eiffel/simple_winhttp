@@ -26,6 +26,8 @@
  * every supported Windows, needs no redistributable, and is linked here via
  * #pragma comment so the ECF needs no external_library entry.
  *
+ * macOS and Linux use libcurl instead; see the second half of this file.
+ *
  * Following Eric Bezault's recommended pattern: implementations in .h file,
  * called from Eiffel inline C with a use directive.
  *
@@ -350,7 +352,176 @@ cleanup:
 static void swhttp_free (char *p) { if (p) free (p); }
 
 #else
-/* ============ NON-WINDOWS STUBS ============ */
+/* ============ macOS and Linux: libcurl ============ */
+
+/*
+ * The same contract as the Windows half, on libcurl (part of macOS; on Linux
+ * the libcurl development package). Redirects are off, the proxy is off, the
+ * body cap holds, and certificates are checked unless the caller opted out.
+ * Only what the caller asked for is sent: curl's default Accept, Content-Type
+ * and Expect headers are suppressed, since WinHTTP adds none of them.
+ *
+ * *a_out_winerr carries the WinHTTP number for the same failure, so
+ * SIMPLE_WINHTTP.failure_description and its callers read one set of codes.
+ *
+ * The receive timeout is an inactivity limit, as in WinHTTP, not a limit on
+ * the whole exchange. libcurl counts it in whole seconds.
+ *
+ * CURLOPT_NOSIGNAL keeps libcurl from touching signals, which SCOOP threads
+ * and the Eiffel runtime both need. No Eiffel memory is touched.
+ */
+
+#include <curl/curl.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <strings.h>
+
+#define SWHTTP_ERROR_TIMEOUT       12002
+#define SWHTTP_ERROR_INTERNAL      12004
+#define SWHTTP_ERROR_NAME          12007
+#define SWHTTP_ERROR_CANNOT_CONNECT 12029
+#define SWHTTP_ERROR_CONNECTION    12030
+#define SWHTTP_ERROR_SECURE        12175
+
+typedef struct {
+    char   *data;
+    size_t  count;
+    size_t  capacity;
+    size_t  limit;       /* 0: none */
+    int     overflowed;
+    int     out_of_memory;
+} swhttp_buffer;
+
+static int swhttp_append (swhttp_buffer *b, const char *a_bytes, size_t a_count)
+{
+    size_t l_capacity = b->capacity ? b->capacity : 4096;
+    char  *l_grown;
+
+    while (b->count + a_count + 1 > l_capacity) l_capacity *= 2;
+    if (l_capacity != b->capacity) {
+        l_grown = (char *) realloc (b->data, l_capacity);
+        if (l_grown == NULL) {
+            b->out_of_memory = 1;
+            return 0;
+        }
+        b->data = l_grown;
+        b->capacity = l_capacity;
+    }
+    memcpy (b->data + b->count, a_bytes, a_count);
+    b->count += a_count;
+    b->data[b->count] = '\0';
+    return 1;
+}
+
+static size_t swhttp_on_body (char *a_bytes, size_t a_size, size_t a_items, void *a_buffer)
+{
+    swhttp_buffer *b = (swhttp_buffer *) a_buffer;
+    size_t l_count = a_size * a_items;
+
+    if (b->limit > 0 && b->count + l_count > b->limit) {
+        b->overflowed = 1;
+        return 0;
+    }
+    return swhttp_append (b, a_bytes, l_count) ? l_count : 0;
+}
+
+/* Keep the last response's headers: an interim 100 starts a block of its own. */
+static size_t swhttp_on_header (char *a_bytes, size_t a_size, size_t a_items, void *a_buffer)
+{
+    swhttp_buffer *b = (swhttp_buffer *) a_buffer;
+    size_t l_count = a_size * a_items;
+
+    if (l_count >= 5 && memcmp (a_bytes, "HTTP/", 5) == 0) b->count = 0;
+    return swhttp_append (b, a_bytes, l_count) ? l_count : 0;
+}
+
+/* Does the CRLF block `a_headers' set header `a_name'? */
+static int swhttp_has_header (const char *a_headers, const char *a_name)
+{
+    const char *l_line = a_headers;
+    size_t      l_name = strlen (a_name);
+
+    while (l_line != NULL && *l_line != '\0') {
+        if (strncasecmp (l_line, a_name, l_name) == 0 && l_line[l_name] == ':') return 1;
+        l_line = strchr (l_line, '\n');
+        if (l_line != NULL) l_line++;
+    }
+    return 0;
+}
+
+/* The CRLF block as a curl list, with curl's defaults suppressed. 0 on failure. */
+static int swhttp_header_list (const char *a_headers, struct curl_slist **a_list)
+{
+    static const char *const l_defaults[] = {"Accept", "Content-Type", "Expect"};
+    const char *l_block = a_headers ? a_headers : "";
+    const char *l_line = l_block;
+    const char *l_end;
+    struct curl_slist *l_grown;
+    char   *l_copy;
+    char    l_suppress[32];
+    size_t  l_length;
+    int     l_i;
+
+    while (*l_line != '\0') {
+        l_end = strchr (l_line, '\n');
+        l_length = l_end ? (size_t) (l_end - l_line) : strlen (l_line);
+        if (l_length > 0 && l_line[l_length - 1] == '\r') l_length--;
+        if (l_length > 0) {
+            l_copy = (char *) malloc (l_length + 1);
+            if (l_copy == NULL) return 0;
+            memcpy (l_copy, l_line, l_length);
+            l_copy[l_length] = '\0';
+            l_grown = curl_slist_append (*a_list, l_copy);
+            free (l_copy);
+            if (l_grown == NULL) return 0;
+            *a_list = l_grown;
+        }
+        if (l_end == NULL) break;
+        l_line = l_end + 1;
+    }
+    for (l_i = 0; l_i < 3; l_i++) {
+        if (!swhttp_has_header (l_block, l_defaults[l_i])) {
+            strcpy (l_suppress, l_defaults[l_i]);
+            strcat (l_suppress, ":");
+            l_grown = curl_slist_append (*a_list, l_suppress);
+            if (l_grown == NULL) return 0;
+            *a_list = l_grown;
+        }
+    }
+    return 1;
+}
+
+static int swhttp_error_code (CURLcode a_code)
+{
+    switch (a_code) {
+    case CURLE_OPERATION_TIMEDOUT:
+        return SWHTTP_ERROR_TIMEOUT;
+    case CURLE_COULDNT_RESOLVE_HOST:
+    case CURLE_COULDNT_RESOLVE_PROXY:
+        return SWHTTP_ERROR_NAME;
+    case CURLE_COULDNT_CONNECT:
+        return SWHTTP_ERROR_CANNOT_CONNECT;
+    case CURLE_SSL_CONNECT_ERROR:
+    case CURLE_PEER_FAILED_VERIFICATION:
+    case CURLE_SSL_CERTPROBLEM:
+    case CURLE_SSL_CIPHER:
+    case CURLE_SSL_CACERT_BADFILE:
+        return SWHTTP_ERROR_SECURE;
+    case CURLE_GOT_NOTHING:
+    case CURLE_SEND_ERROR:
+    case CURLE_RECV_ERROR:
+    case CURLE_PARTIAL_FILE:
+        return SWHTTP_ERROR_CONNECTION;
+    default:
+        return SWHTTP_ERROR_INTERNAL;
+    }
+}
+
+static void swhttp_global_init (void) { curl_global_init (CURL_GLOBAL_DEFAULT); }
+
+/* See the Windows swhttp_request above for the full contract. */
 static char *swhttp_request (const char *a_verb, const char *a_host, int a_port,
                              const char *a_path, int a_use_tls,
                              const char *a_headers,
@@ -361,18 +532,100 @@ static char *swhttp_request (const char *a_verb, const char *a_host, int a_port,
                              int *a_out_status, int *a_out_winerr,
                              int *a_out_overflow)
 {
-    (void) a_verb; (void) a_host; (void) a_port; (void) a_path;
-    (void) a_use_tls; (void) a_headers; (void) a_body; (void) a_body_len;
-    (void) a_connect_ms; (void) a_receive_ms; (void) a_max_body;
-    (void) a_validate_certs;
-    if (a_out_len)      *a_out_len = 0;
-    if (a_out_headers)  *a_out_headers = 0;
-    if (a_out_status)   *a_out_status = 0;
-    if (a_out_winerr)   *a_out_winerr = 0;
-    if (a_out_overflow) *a_out_overflow = 0;
-    return 0;
+    static pthread_once_t l_once = PTHREAD_ONCE_INIT;
+    CURL              *l_curl = NULL;
+    struct curl_slist *l_list = NULL;
+    swhttp_buffer      l_body, l_headers;
+    char              *l_url = NULL;
+    size_t             l_url_size;
+    long               l_status = 0;
+    long               l_idle_seconds = ((long) a_receive_ms + 999) / 1000;
+    int                l_ipv6 = strchr (a_host, ':') != NULL;
+    int                l_has_body = a_body != NULL && a_body_len > 0;
+    int                l_error = SWHTTP_ERROR_INTERNAL;
+    CURLcode           l_code;
+
+    if (a_out_len != NULL)      *a_out_len = 0;
+    if (a_out_headers != NULL)  *a_out_headers = NULL;
+    if (a_out_status != NULL)   *a_out_status = 0;
+    if (a_out_winerr != NULL)   *a_out_winerr = 0;
+    if (a_out_overflow != NULL) *a_out_overflow = 0;
+
+    memset (&l_body, 0, sizeof (l_body));
+    memset (&l_headers, 0, sizeof (l_headers));
+    l_body.limit = (size_t) a_max_body;
+    /* An empty reply is still a reply: the buffer exists from the start. */
+    if (!swhttp_append (&l_body, "", 0) || !swhttp_append (&l_headers, "", 0)) goto cleanup;
+
+    pthread_once (&l_once, swhttp_global_init);
+    l_curl = curl_easy_init ();
+    if (l_curl == NULL) goto cleanup;
+    if (!swhttp_header_list (a_headers, &l_list)) goto cleanup;
+
+    l_url_size = strlen (a_host) + strlen (a_path) + 32;
+    l_url = (char *) malloc (l_url_size);
+    if (l_url == NULL) goto cleanup;
+    snprintf (l_url, l_url_size, "%s://%s%s%s:%d%s", a_use_tls ? "https" : "http",
+              l_ipv6 ? "[" : "", a_host, l_ipv6 ? "]" : "", a_port, a_path);
+
+    curl_easy_setopt (l_curl, CURLOPT_URL, l_url);
+    curl_easy_setopt (l_curl, CURLOPT_PATH_AS_IS, 1L);
+    curl_easy_setopt (l_curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt (l_curl, CURLOPT_FOLLOWLOCATION, 0L);
+    curl_easy_setopt (l_curl, CURLOPT_PROXY, "");
+    curl_easy_setopt (l_curl, CURLOPT_HTTP_VERSION, (long) CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt (l_curl, CURLOPT_USERAGENT, "simple_winhttp/0.1");
+    curl_easy_setopt (l_curl, CURLOPT_HTTPHEADER, l_list);
+    curl_easy_setopt (l_curl, CURLOPT_CONNECTTIMEOUT_MS, (long) a_connect_ms);
+    curl_easy_setopt (l_curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt (l_curl, CURLOPT_LOW_SPEED_TIME, l_idle_seconds > 0 ? l_idle_seconds : 1L);
+    curl_easy_setopt (l_curl, CURLOPT_SSL_VERIFYPEER, a_validate_certs ? 1L : 0L);
+    curl_easy_setopt (l_curl, CURLOPT_SSL_VERIFYHOST, a_validate_certs ? 2L : 0L);
+    curl_easy_setopt (l_curl, CURLOPT_WRITEFUNCTION, swhttp_on_body);
+    curl_easy_setopt (l_curl, CURLOPT_WRITEDATA, &l_body);
+    curl_easy_setopt (l_curl, CURLOPT_HEADERFUNCTION, swhttp_on_header);
+    curl_easy_setopt (l_curl, CURLOPT_HEADERDATA, &l_headers);
+
+    if (strcmp (a_verb, "HEAD") == 0) {
+        curl_easy_setopt (l_curl, CURLOPT_NOBODY, 1L);
+    } else {
+        if (l_has_body || strcmp (a_verb, "POST") == 0 || strcmp (a_verb, "PUT") == 0 || strcmp (a_verb, "PATCH") == 0) {
+            curl_easy_setopt (l_curl, CURLOPT_POSTFIELDS, l_has_body ? a_body : "");
+            curl_easy_setopt (l_curl, CURLOPT_POSTFIELDSIZE, l_has_body ? (long) a_body_len : 0L);
+        }
+        curl_easy_setopt (l_curl, CURLOPT_CUSTOMREQUEST, a_verb);
+    }
+
+    l_code = curl_easy_perform (l_curl);
+    if (l_code != CURLE_OK) {
+        l_error = swhttp_error_code (l_code);
+        goto cleanup;
+    }
+    curl_easy_getinfo (l_curl, CURLINFO_RESPONSE_CODE, &l_status);
+    if (a_out_status != NULL) *a_out_status = (int) l_status;
+    if (a_out_len != NULL) *a_out_len = (int) l_body.count;
+    if (a_out_headers != NULL) {
+        *a_out_headers = l_headers.data;
+    } else {
+        free (l_headers.data);
+    }
+    curl_slist_free_all (l_list);
+    curl_easy_cleanup (l_curl);
+    free (l_url);
+    return l_body.data;
+
+cleanup:
+    if (a_out_winerr != NULL)   *a_out_winerr = l_body.overflowed ? 0 : l_error;
+    if (a_out_overflow != NULL) *a_out_overflow = l_body.overflowed;
+    free (l_body.data);
+    free (l_headers.data);
+    if (l_list != NULL) curl_slist_free_all (l_list);
+    if (l_curl != NULL) curl_easy_cleanup (l_curl);
+    free (l_url);
+    return NULL;
 }
-static void swhttp_free (char *p) { (void) p; }
+
+static void swhttp_free (char *p) { if (p) free (p); }
 #endif
 
 #endif /* SIMPLE_WINHTTP_H */
