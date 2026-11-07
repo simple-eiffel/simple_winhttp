@@ -17,6 +17,11 @@
 			<void_safety support="all"/>
 		</capability>
 		<external_include location="$(SIMPLE_EIFFEL)/simple_winhttp/Clib"/>
+		<external_linker_flag value="-lcurl -lpthread">
+			<condition>
+				<platform excluded_value="windows"/>
+			</condition>
+		</external_linker_flag>
 		<library name="base" location="$ISE_LIBRARY\library\base\base.ecf"/>
 		<cluster name="src" location=".\src\" recursive="true"/>
 	</target>
